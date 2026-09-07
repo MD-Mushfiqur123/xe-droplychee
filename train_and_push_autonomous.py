@@ -183,11 +183,11 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
 
     # [1/5] Tokenizer & Model Loading
-    print("\n[1/5] Loading Tokenizer & Model...")
+    print("\n[1/5] Loading Tokenizer & Model...", flush=True)
     try:
         tokenizer = AutoTokenizer.from_pretrained(args.model_id, trust_remote_code=True)
     except Exception as e_tok:
-        print(f"  Remote tokenizer load failed ({e_tok}). Loading from local ./hf_model...")
+        print(f"  Remote tokenizer load failed ({e_tok}). Loading from local ./hf_model...", flush=True)
         tokenizer = AutoTokenizer.from_pretrained("./hf_model", trust_remote_code=True)
 
     if tokenizer.pad_token is None:
@@ -196,45 +196,46 @@ def main():
     try:
         config = AutoConfig.from_pretrained(args.model_id, trust_remote_code=True)
     except Exception as e_cfg:
-        print(f"  Remote config load failed ({e_cfg}). Loading from local ./hf_model...")
+        print(f"  Remote config load failed ({e_cfg}). Loading from local ./hf_model...", flush=True)
         config = AutoConfig.from_pretrained("./hf_model", trust_remote_code=True)
 
     model = None
     try:
-        print(f"  Attempting to load existing weights from '{args.model_id}'...")
+        print(f"  Attempting to load existing weights from '{args.model_id}'...", flush=True)
         model = AutoModelForCausalLM.from_pretrained(
             args.model_id,
             config=config,
             trust_remote_code=True,
-            torch_dtype=dtype,
+            dtype=dtype,
         )
-        print("  ✓ Successfully resumed from existing checkpoint weights!")
+        print("  ✓ Successfully resumed from existing checkpoint weights!", flush=True)
     except (OSError, EnvironmentError, KeyError) as e_weights:
-        print(f"  ℹ️ No existing pre-trained weights found ({e_weights}).")
-        print("  🚀 Initializing fresh xe_droplychee architecture from config for Day-1 Pre-Training...")
+        print(f"  ℹ️ No existing pre-trained weights found ({e_weights}).", flush=True)
+        print("  🚀 Initializing fresh xe_droplychee architecture from config for Day-1 Pre-Training...", flush=True)
+        print("  ⏳ Allocating 28 layers & 65 experts directly on GPU (takes ~20-30s)...", flush=True)
         try:
             model = AutoModelForCausalLM.from_config(
                 config,
                 trust_remote_code=True,
-                torch_dtype=dtype,
+                dtype=dtype,
             )
         except Exception:
             from m_droplychee import DroplycheeForCausalLM
             model = DroplycheeForCausalLM(config).to(dtype=dtype)
-        print(f"  ✓ Initialized fresh model with {sum(p.numel() for p in model.parameters()):,} parameters!")
+        print(f"  ✓ Initialized fresh model with {sum(p.numel() for p in model.parameters()):,} parameters!", flush=True)
 
     model = model.to(device)
     model.train()
 
     # [2/5] Optimizer & Cosine Scheduler
-    print("\n[2/5] Initializing Optimizer & Cosine Scheduler...")
+    print("\n[2/5] Initializing Optimizer & Cosine Scheduler...", flush=True)
     try:
         import bitsandbytes as bnb
         optimizer = bnb.optim.AdamW8bit(model.parameters(), lr=args.learning_rate, betas=(0.9, 0.95), weight_decay=args.weight_decay)
-        print("  Using: 8-bit AdamW (bitsandbytes)")
+        print("  Using: 8-bit AdamW (bitsandbytes)", flush=True)
     except Exception:
         optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, betas=(0.9, 0.95), weight_decay=args.weight_decay, fused=True if device == "cuda" else False)
-        print("  Using: PyTorch Fused AdamW")
+        print("  Using: PyTorch Fused AdamW", flush=True)
 
     scheduler = get_cosine_schedule_with_warmup(
         optimizer,
@@ -243,12 +244,13 @@ def main():
     )
 
     # [3/5] Streaming Dataset Setup
-    print(f"\n[3/5] Connecting to Hugging Face Streaming Dataset ({args.dataset_name})...")
+    print(f"\n[3/5] Connecting to Hugging Face Streaming Dataset ({args.dataset_name})...", flush=True)
     stream_dataset = ZeroLeakStreamingDataset(args.dataset_name, tokenizer, seq_len=args.seq_len)
     dataloader = DataLoader(stream_dataset, batch_size=args.batch_size)
+    print("  ✓ Dataset stream ready! Starting training steps...", flush=True)
 
     # [4/5] Running 4-Hour Training Loop
-    print(f"\n[4/5] Executing Training Loop (Target: {args.total_steps:,} steps)...")
+    print(f"\n[4/5] Executing Training Loop (Target: {args.total_steps:,} steps)...", flush=True)
     step = 0
     total_loss = 0.0
     start_time = time.time()
@@ -277,18 +279,18 @@ def main():
 
                 global_step = (step + 1) // args.gradient_accumulation_steps
 
-                if global_step % 10 == 0:
+                if global_step == 1 or global_step % 10 == 0:
                     elapsed = time.time() - start_time
                     tok_per_sec = (global_step * args.batch_size * args.gradient_accumulation_steps * args.seq_len) / elapsed
                     cur_loss = total_loss / (step + 1)
                     vram_gb = torch.cuda.memory_allocated() / (1024**3) if device == "cuda" else 0.0
                     lr = scheduler.get_last_lr()[0]
                     eta_hours = ((args.total_steps - global_step) * (elapsed / global_step)) / 3600
-                    print(f"Step {global_step:5d}/{args.total_steps:5d} | Loss: {cur_loss:.4f} | LR: {lr:.2e} | Speed: {tok_per_sec:,.0f} tok/s | VRAM: {vram_gb:.1f}G | ETA: {eta_hours:.2f}h")
+                    print(f"Step {global_step:5d}/{args.total_steps:5d} | Loss: {cur_loss:.4f} | LR: {lr:.2e} | Speed: {tok_per_sec:,.0f} tok/s | VRAM: {vram_gb:.1f}G | ETA: {eta_hours:.2f}h", flush=True)
 
                 if global_step % args.save_every == 0:
                     ckpt = os.path.join(args.output_dir, f"checkpoint-{global_step}")
-                    print(f"  [Checkpoint] Saving intermediate checkpoint to {ckpt}...")
+                    print(f"  [Checkpoint] Saving intermediate checkpoint to {ckpt}...", flush=True)
                     model.save_pretrained(ckpt, safe_serialization=True)
                     tokenizer.save_pretrained(ckpt)
 
