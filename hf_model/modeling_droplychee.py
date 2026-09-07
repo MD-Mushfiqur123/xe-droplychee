@@ -235,17 +235,17 @@ class XeMoE(nn.Module):
         x_flat = hidden_states.view(-1, orig_shape[-1])
         num_tokens = x_flat.shape[0]
 
-        shared_output = self.shared_experts(x_flat) if self.shared_experts is not None else torch.zeros_like(x_flat)
+        shared_output = self.shared_experts(x_flat).to(dtype=x_flat.dtype) if self.shared_experts is not None else torch.zeros_like(x_flat)
 
         router_logits = self.gate(x_flat)
         affinity_scores = torch.sigmoid(router_logits)
 
-        # Dynamic Bias Top-K Selection
-        scores_for_selection = affinity_scores + self.expert_biases
+        # Dynamic Bias Top-K Selection (ensure consistent dtype to avoid unwanted scalar upcasting)
+        scores_for_selection = affinity_scores + self.expert_biases.to(dtype=affinity_scores.dtype)
         _, topk_indices = torch.topk(scores_for_selection, self.top_k, dim=-1)
 
         selected_scores = torch.gather(affinity_scores, dim=-1, index=topk_indices)
-        weights = selected_scores / (selected_scores.sum(dim=-1, keepdim=True) + 1e-9)
+        weights = (selected_scores / (selected_scores.sum(dim=-1, keepdim=True) + 1e-9)).to(dtype=x_flat.dtype)
 
         if self.training:
             with torch.no_grad():
@@ -267,17 +267,18 @@ class XeMoE(nn.Module):
         else:
             aux_loss = torch.zeros((), device=hidden_states.device, dtype=hidden_states.dtype)
 
-        # Expert dispatch without token_mask.any() CPU-GPU synchronization
+        # Expert dispatch without token_mask.any() CPU-GPU synchronization and strict dtype safety
         routed_output = torch.zeros_like(x_flat)
         for i, expert in enumerate(self.experts):
             token_mask = (topk_indices == i)
             token_idx, k_pos = torch.where(token_mask)
             if token_idx.numel() > 0:
-                expert_weights = weights[token_idx, k_pos].unsqueeze(-1)
-                expert_out = expert(x_flat[token_idx])
-                routed_output.index_add_(0, token_idx, expert_weights * expert_out)
+                expert_weights = weights[token_idx, k_pos].unsqueeze(-1).to(dtype=routed_output.dtype)
+                expert_out = expert(x_flat[token_idx]).to(dtype=routed_output.dtype)
+                source = (expert_weights * expert_out).to(dtype=routed_output.dtype)
+                routed_output.index_add_(0, token_idx, source)
 
-        final_output = (shared_output + routed_output).view(orig_shape)
+        final_output = (shared_output + routed_output).to(dtype=x_flat.dtype).view(orig_shape)
         return final_output, aux_loss
 
 

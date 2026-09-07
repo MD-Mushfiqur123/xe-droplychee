@@ -442,6 +442,20 @@ def main():
                 except Exception as e:
                     print(f"  [Warning] Failed reading metadata from {ckpt_path}: {e}", flush=True)
 
+    # Clear stale Hugging Face modules cache if present to prevent using obsolete cached code
+    cache_dir = Path.home() / ".cache" / "huggingface" / "modules" / "transformers_modules"
+    if cache_dir.exists():
+        try:
+            shutil.rmtree(str(cache_dir), ignore_errors=True)
+            print("  ✓ Cleared stale Hugging Face modules cache.", flush=True)
+        except Exception:
+            pass
+
+    # Ensure local model directory is at the head of sys.path
+    model_dir_abs = str(Path(args.model_id).resolve())
+    if model_dir_abs not in sys.path:
+        sys.path.insert(0, model_dir_abs)
+
     # [1/5] Load Tokenizer & Config
     print("\n[1/5] Loading Tokenizer & Architecture Configuration...", flush=True)
     try:
@@ -452,10 +466,14 @@ def main():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
+    # Prevent spurious sequence length warning
+    tokenizer.model_max_length = 8192
+
     try:
         config = AutoConfig.from_pretrained(args.model_id, trust_remote_code=True)
     except Exception:
-        config = AutoConfig.from_pretrained("./hf_model", trust_remote_code=True)
+        from configuration_droplychee import XeDroplycheeConfig
+        config = XeDroplycheeConfig()
 
     # [2/5] Direct GPU VRAM Model Instantiation
     print("\n[2/5] Instantiating Model Directly in GPU VRAM (Sub-2s)...", flush=True)
@@ -477,15 +495,15 @@ def main():
             try:
                 torch.set_default_dtype(dtype)
                 try:
+                    # Import directly from local files to guarantee zero stale cache
+                    from modeling_droplychee import XeDroplycheeForCausalLM
+                    model = XeDroplycheeForCausalLM(config)
+                except Exception:
                     model = AutoModelForCausalLM.from_config(
                         config,
                         trust_remote_code=True,
                         dtype=dtype,
                     )
-                except Exception:
-                    sys.path.insert(0, str(Path(args.model_id).resolve()))
-                    from modeling_droplychee import XeDroplycheeForCausalLM
-                    model = XeDroplycheeForCausalLM(config)
             finally:
                 torch.set_default_dtype(prev_dtype)
 
