@@ -1,0 +1,22 @@
+{
+  "add_prefix_space": false,
+  "backend": "tokenizers",
+  "bos_token": "<|begin_of_text|>",
+  "eos_token": "<|end_of_text|>",
+  "errors": "replace",
+  "extra_special_tokens": [
+    "<think>",
+    "</think>",
+    "<answer>",
+    "</answer>",
+    "<｜fim_begin｜>",
+    "<｜fim_hole｜>",
+    "<｜fim_end｜>"
+  ],
+  "is_local": false,
+  "local_files_only": false,
+  "model_max_length": 1024,
+  "pad_token": "<|pad|>",
+  "tokenizer_class": "GPT2Tokenizer",
+  "unk_token": "<|endoftext|>"
+}

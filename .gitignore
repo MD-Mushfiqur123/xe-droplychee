@@ -1,0 +1,57 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# PyTorch checkpoints and training outputs
+*.pt
+*.bin
+*.safetensors
+*.pth
+checkpoints/
+checkpoint-*/
+xe_droplychee_checkpoints/
+day1_checkpoints/
+xe_droplychee_final_export/
+final_trained_model/
+
+# Zip packages
+*.zip
+
+# Logs and temp files
+*.log
+*.tmp
+test.py
+test_write.py

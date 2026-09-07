@@ -1,0 +1,14 @@
+{
+  "bos_token": "<|begin_of_text|>",
+  "eos_token": "<|end_of_text|>",
+  "pad_token": "<|pad|>",
+  "additional_special_tokens": [
+    "<think>",
+    "</think>",
+    "<answer>",
+    "</answer>",
+    "<\uff5cfim_begin\uff5c>",
+    "<\uff5cfim_hole\uff5c>",
+    "<\uff5cfim_end\uff5c>"
+  ]
+}
