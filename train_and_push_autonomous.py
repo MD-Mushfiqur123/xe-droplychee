@@ -29,7 +29,7 @@ from huggingface_hub import HfApi
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Autonomous 4-Hour Training & Hugging Face Auto-Push")
-    parser.add_argument("--model_id", type=str, default="MD-Mushfiqur123/m-droplychee", help="Base model checkpoint")
+    parser.add_argument("--model_id", type=str, default="./hf_model", help="Base model checkpoint or local architecture directory")
     parser.add_argument("--dataset_name", type=str, default="nahid-hub/B-CORE-bengali-corpus", help="Streaming dataset")
     parser.add_argument("--output_repo", type=str, default="MD-Mushfiqur123/xe-droplychee-v2-trained", help="Target HF repo")
     parser.add_argument("--hf_token", type=str, default=os.getenv("HF_TOKEN", ""))
@@ -183,16 +183,47 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
 
     # [1/5] Tokenizer & Model Loading
-    print("\n[1/5] Loading Tokenizer & Model from base repo...")
-    tokenizer = AutoTokenizer.from_pretrained(args.model_id, trust_remote_code=True)
+    print("\n[1/5] Loading Tokenizer & Model...")
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(args.model_id, trust_remote_code=True)
+    except Exception as e_tok:
+        print(f"  Remote tokenizer load failed ({e_tok}). Loading from local ./hf_model...")
+        tokenizer = AutoTokenizer.from_pretrained("./hf_model", trust_remote_code=True)
+
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model_id,
-        trust_remote_code=True,
-        torch_dtype=dtype,
-    ).to(device)
+    try:
+        config = AutoConfig.from_pretrained(args.model_id, trust_remote_code=True)
+    except Exception as e_cfg:
+        print(f"  Remote config load failed ({e_cfg}). Loading from local ./hf_model...")
+        config = AutoConfig.from_pretrained("./hf_model", trust_remote_code=True)
+
+    model = None
+    try:
+        print(f"  Attempting to load existing weights from '{args.model_id}'...")
+        model = AutoModelForCausalLM.from_pretrained(
+            args.model_id,
+            config=config,
+            trust_remote_code=True,
+            torch_dtype=dtype,
+        )
+        print("  ✓ Successfully resumed from existing checkpoint weights!")
+    except (OSError, EnvironmentError, KeyError) as e_weights:
+        print(f"  ℹ️ No existing pre-trained weights found ({e_weights}).")
+        print("  🚀 Initializing fresh xe_droplychee architecture from config for Day-1 Pre-Training...")
+        try:
+            model = AutoModelForCausalLM.from_config(
+                config,
+                trust_remote_code=True,
+                torch_dtype=dtype,
+            )
+        except Exception:
+            from m_droplychee import DroplycheeForCausalLM
+            model = DroplycheeForCausalLM(config).to(dtype=dtype)
+        print(f"  ✓ Initialized fresh model with {sum(p.numel() for p in model.parameters()):,} parameters!")
+
+    model = model.to(device)
     model.train()
 
     # [2/5] Optimizer & Cosine Scheduler

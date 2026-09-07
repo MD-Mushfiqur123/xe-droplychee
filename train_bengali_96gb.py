@@ -63,18 +63,39 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
 
     print('[1/4] Loading Tokenizer & Config...')
-    tokenizer = AutoTokenizer.from_pretrained(args.model_id, trust_remote_code=True)
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(args.model_id, trust_remote_code=True)
+    except Exception:
+        tokenizer = AutoTokenizer.from_pretrained("./hf_model", trust_remote_code=True)
+
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    config = AutoConfig.from_pretrained(args.model_id, trust_remote_code=True)
+    try:
+        config = AutoConfig.from_pretrained(args.model_id, trust_remote_code=True)
+    except Exception:
+        config = AutoConfig.from_pretrained("./hf_model", trust_remote_code=True)
 
     print('[2/4] Initializing Model weights...')
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model_id,
-        trust_remote_code=True,
-        torch_dtype=dtype
-    ).to(device)
+    try:
+        model = AutoModelForCausalLM.from_pretrained(
+            args.model_id,
+            config=config,
+            trust_remote_code=True,
+            torch_dtype=dtype
+        )
+    except (OSError, EnvironmentError, KeyError):
+        try:
+            model = AutoModelForCausalLM.from_config(
+                config,
+                trust_remote_code=True,
+                torch_dtype=dtype
+            )
+        except Exception:
+            from m_droplychee import DroplycheeForCausalLM
+            model = DroplycheeForCausalLM(config).to(dtype=dtype)
+
+    model = model.to(device)
     model.train()
 
     # Optional torch.compile for extra 20% speedup on Ada/Blackwell

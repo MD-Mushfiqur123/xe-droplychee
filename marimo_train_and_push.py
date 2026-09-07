@@ -276,16 +276,39 @@ print(tokenizer.decode(output[0], skip_special_tokens=True))
 
     # 2. Loading Model & Tokenizer
     print("Loading Tokenizer and Model...")
-    base_model_id = "MD-Mushfiqur123/m-droplychee"
-    tokenizer = AutoTokenizer.from_pretrained(base_model_id, trust_remote_code=True)
+    base_model_id = "./hf_model"
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(base_model_id, trust_remote_code=True)
+    except Exception:
+        tokenizer = AutoTokenizer.from_pretrained("MD-Mushfiqur123/m-droplychee", trust_remote_code=True)
+
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    model = AutoModelForCausalLM.from_pretrained(
-        base_model_id,
-        trust_remote_code=True,
-        torch_dtype=dtype,
-    ).to(device)
+    try:
+        config = AutoConfig.from_pretrained(base_model_id, trust_remote_code=True)
+    except Exception:
+        config = AutoConfig.from_pretrained("MD-Mushfiqur123/m-droplychee", trust_remote_code=True)
+
+    try:
+        model = AutoModelForCausalLM.from_pretrained(
+            base_model_id,
+            config=config,
+            trust_remote_code=True,
+            torch_dtype=dtype,
+        )
+    except (OSError, EnvironmentError, KeyError):
+        try:
+            model = AutoModelForCausalLM.from_config(
+                config,
+                trust_remote_code=True,
+                torch_dtype=dtype,
+            )
+        except Exception:
+            from m_droplychee import DroplycheeForCausalLM
+            model = DroplycheeForCausalLM(config).to(dtype=dtype)
+
+    model = model.to(device)
     model.train()
 
     # 3. Optimizer & Scheduler
