@@ -50,8 +50,8 @@ def rotate_half(x: torch.Tensor) -> torch.Tensor:
 
 
 def apply_rotary_pos_emb(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
-    cos = cos.unsqueeze(1) if x.ndim == 4 else cos
-    sin = sin.unsqueeze(1) if x.ndim == 4 else sin
+    cos = (cos.unsqueeze(1) if x.ndim == 4 else cos).to(dtype=x.dtype)
+    sin = (sin.unsqueeze(1) if x.ndim == 4 else sin).to(dtype=x.dtype)
     return (x * cos) + (rotate_half(x) * sin)
 
 
@@ -163,19 +163,24 @@ class XeMLA(nn.Module):
         value_states = v_states.transpose(1, 2)                   # [bsz, heads, kv_len, v_dim]
 
         # Fast Scaled Dot-Product Attention (SDPA)
-        if self.use_sdpa and attention_mask is None and q_len > 1:
+        if self.use_sdpa and attention_mask is None:
+            is_causal = (q_len > 1 and past_key_values is None)
             attn_output = F.scaled_dot_product_attention(
                 query_states, key_states, value_states,
-                is_causal=True,
+                is_causal=is_causal,
                 dropout_p=self.config.attention_dropout if self.training else 0.0,
                 scale=self.softmax_scale
             )
         else:
             attn_weights = torch.matmul(query_states, key_states.transpose(-1, -2)) * self.softmax_scale
             if attention_mask is not None:
-                attn_weights = attn_weights + attention_mask
-            if q_len > 1:
-                causal_mask = torch.triu(torch.full((q_len, q_len), float('-inf'), device=hidden_states.device), diagonal=1)
+                if attention_mask.ndim == 2:
+                    expanded_mask = (1.0 - attention_mask[:, None, None, :].to(attn_weights.dtype)) * torch.finfo(attn_weights.dtype).min
+                    attn_weights = attn_weights + expanded_mask
+                else:
+                    attn_weights = attn_weights + attention_mask
+            if q_len > 1 and past_key_values is None:
+                causal_mask = torch.triu(torch.full((q_len, q_len), torch.finfo(attn_weights.dtype).min, device=hidden_states.device), diagonal=1)
                 attn_weights = attn_weights + causal_mask
 
             attn_weights = F.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
@@ -247,24 +252,27 @@ class XeMoE(nn.Module):
                 mask = torch.zeros_like(affinity_scores).scatter_(-1, topk_indices, 1.0)
                 tokens_per_expert = mask.sum(dim=0)
                 ideal_load = (self.top_k * num_tokens) / self.num_routed_experts
-                if self.gamma > 0:
-                    overloaded = tokens_per_expert > ideal_load
-                    underloaded = tokens_per_expert < ideal_load
-                    self.expert_biases[overloaded] -= self.gamma
-                    self.expert_biases[underloaded] += self.gamma
+                if self.gamma > 0 and torch.is_grad_enabled():
+                    delta = torch.zeros_like(self.expert_biases)
+                    delta[tokens_per_expert > ideal_load] -= self.gamma
+                    delta[tokens_per_expert < ideal_load] += self.gamma
+                    new_biases = (self.expert_biases + delta)
+                    new_biases = (new_biases - new_biases.mean()).clamp(-0.5, 0.5)
+                    self.expert_biases.copy_(new_biases)
 
-            normed_affinity = affinity_scores / (affinity_scores.sum(dim=-1, keepdim=True) + 1e-9)
+            normed_affinity = affinity_scores / (affinity_scores.sum(dim=-1, keepdim=True) + 1e-6)
             f_i = (self.num_routed_experts / (self.top_k * num_tokens)) * tokens_per_expert
             p_i = normed_affinity.mean(dim=0)
             aux_loss = self.aux_loss_alpha * (f_i * p_i).sum()
         else:
-            aux_loss = torch.tensor(0.0, device=hidden_states.device)
+            aux_loss = torch.zeros((), device=hidden_states.device, dtype=hidden_states.dtype)
 
+        # Expert dispatch without token_mask.any() CPU-GPU synchronization
         routed_output = torch.zeros_like(x_flat)
         for i, expert in enumerate(self.experts):
             token_mask = (topk_indices == i)
-            if token_mask.any():
-                token_idx, k_pos = torch.where(token_mask)
+            token_idx, k_pos = torch.where(token_mask)
+            if token_idx.numel() > 0:
                 expert_weights = weights[token_idx, k_pos].unsqueeze(-1)
                 expert_out = expert(x_flat[token_idx])
                 routed_output.index_add_(0, token_idx, expert_weights * expert_out)
@@ -355,14 +363,15 @@ class XeDroplycheePreTrainedModel(PreTrainedModel):
 
 
 class XeDroplycheeModel(XeDroplycheePreTrainedModel):
-    def __init__(self, config: XeDroplycheeConfig):
-        super().__init__(config)
+    def __init__(self, config: XeDroplycheeConfig, *args, **kwargs):
+        super().__init__(config, *args, **kwargs)
         self.config = config
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size)
         self.layers = nn.ModuleList([
             XeDecoderLayer(config, idx) for idx in range(config.num_hidden_layers)
         ])
         self.norm = XeRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.gradient_checkpointing = False
         self.post_init()
 
     def forward(
@@ -373,14 +382,29 @@ class XeDroplycheeModel(XeDroplycheePreTrainedModel):
         use_cache: bool = False,
     ) -> Tuple[torch.Tensor, Optional[List[Tuple[torch.Tensor, torch.Tensor]]], torch.Tensor]:
         hidden_states = self.embed_tokens(input_ids)
-        total_aux_loss = torch.tensor(0.0, device=input_ids.device)
+        total_aux_loss = torch.zeros((), device=input_ids.device, dtype=hidden_states.dtype)
         next_cache = [] if use_cache else None
 
         for idx, layer in enumerate(self.layers):
             layer_past = past_key_values[idx] if past_key_values is not None else None
-            hidden_states, current_kv, aux_loss = layer(
-                hidden_states, attention_mask=attention_mask, past_key_values=layer_past, use_cache=use_cache
-            )
+            if self.gradient_checkpointing and self.training:
+                def create_custom_forward(module):
+                    def custom_forward(*inputs):
+                        return module(*inputs)
+                    return custom_forward
+
+                hidden_states, current_kv, aux_loss = torch.utils.checkpoint.checkpoint(
+                    create_custom_forward(layer),
+                    hidden_states,
+                    attention_mask,
+                    layer_past,
+                    use_cache,
+                    use_reentrant=False,
+                )
+            else:
+                hidden_states, current_kv, aux_loss = layer(
+                    hidden_states, attention_mask=attention_mask, past_key_values=layer_past, use_cache=use_cache
+                )
             total_aux_loss = total_aux_loss + aux_loss
             if use_cache:
                 next_cache.append(current_kv)
@@ -390,8 +414,8 @@ class XeDroplycheeModel(XeDroplycheePreTrainedModel):
 
 
 class XeDroplycheeForCausalLM(XeDroplycheePreTrainedModel):
-    def __init__(self, config: XeDroplycheeConfig):
-        super().__init__(config)
+    def __init__(self, config: XeDroplycheeConfig, *args, **kwargs):
+        super().__init__(config, *args, **kwargs)
         self.config = config
         self.model = XeDroplycheeModel(config)
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)

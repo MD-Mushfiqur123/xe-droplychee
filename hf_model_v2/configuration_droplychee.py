@@ -14,7 +14,7 @@ class XeDroplycheeConfig(PretrainedConfig):
     def __init__(
         self,
         # Scaled Model Dimensions (Optimized 1/10th scale for 94GB/96GB VRAM)
-        vocab_size: int = 49152,
+        vocab_size: int = 50267,
         hidden_size: int = 2240,
         intermediate_size: int = 4480,
         moe_intermediate_size: int = 768,
@@ -54,9 +54,10 @@ class XeDroplycheeConfig(PretrainedConfig):
 
         initializer_range: float = 0.006,
         tie_word_embeddings: bool = True,
-        bos_token_id: int = 1,
-        eos_token_id: int = 2,
-        pad_token_id: Optional[int] = None,
+        bos_token_id: int = 50257,
+        eos_token_id: int = 50258,
+        pad_token_id: int = 50259,
+        unk_token_id: int = 50256,
         **kwargs
     ):
         self.vocab_size = vocab_size
